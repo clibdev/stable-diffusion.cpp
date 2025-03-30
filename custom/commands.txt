@@ -1,0 +1,50 @@
+./sd -m v1-5-pruned-emaonly.safetensors \
+    -p 'a lovely cat'
+
+./sd -m v2-1_768-ema-pruned.safetensors \
+    -H 768 -W 768 \
+    -p 'a lovely cat'
+
+./sd -m sd_xl_base_1.0.safetensors \
+    --vae sdxl_vae.safetensors \
+    -H 1024 -W 1024 \
+    -p 'a lovely cat'
+
+./sd -m sd3.5_medium.safetensors \
+    --clip_l clip_l.safetensors \
+    --clip_g clip_g.safetensors \
+    --t5xxl t5xxl_fp16.safetensors \
+    -H 1024 -W 1024 --cfg-scale 4.5 --sampling-method euler \
+    -p 'a lovely cat'
+
+./sd -m sd3.5_large.safetensors \
+    --clip_l clip_l.safetensors \
+    --clip_g clip_g.safetensors \
+    --t5xxl t5xxl_fp16.safetensors \
+    -H 1024 -W 1024 --cfg-scale 4.5 --sampling-method euler \
+    -p 'a lovely cat'
+
+./sd -m sd3_medium_incl_clips_t5xxlfp16.safetensors \
+    -H 1024 -W 1024 --cfg-scale 4.5 --sampling-method euler \
+    -p 'a lovely cat'
+
+./sd --diffusion-model flux1-dev-Q8_0.gguf \
+    --vae ae.safetensors \
+    --clip_l clip_l.safetensors \
+    --t5xxl t5xxl_fp16.safetensors \
+    -H 1024 -W 1024 --cfg-scale 1.0 --sampling-method euler \
+    -p 'a lovely cat'
+
+./sd --diffusion-model flux1-schnell-Q8_0.gguf \
+    --vae ae.safetensors \
+    --clip_l clip_l.safetensors \
+    --t5xxl t5xxl_fp16.safetensors \
+    -H 1024 -W 1024 --cfg-scale 1.0 --sampling-method euler \
+    -p 'a lovely cat'
+
+./sd --diffusion-model flux1-dev-Q8_0.gguf \
+    --vae ae.safetensors \
+    --clip_l clip_l.safetensors \
+    --t5xxl t5xxl_fp16.safetensors \
+    -H 1024 -W 1024 --cfg-scale 1.0 --sampling-method euler \
+    -p 'a lovely cat'
