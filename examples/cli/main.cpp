@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -237,7 +238,7 @@ void print_usage(int argc, const char* argv[]) {
     printf("  --skip-layers LAYERS               Layers to skip for SLG steps: (default: [7,8,9])\n");
     printf("  --skip-layer-start START           SLG enabling point: (default: 0.01)\n");
     printf("  --skip-layer-end END               SLG disabling point: (default: 0.2)\n");
-    printf("  --scheduler {discrete, karras, exponential, ays, gits} Denoiser sigma scheduler (default: discrete)\n");
+    printf("  --scheduler {discrete, karras, exponential, ays, gits, smoothstep} Denoiser sigma scheduler (default: discrete)\n");
     printf("  --sampling-method {euler, euler_a, heun, dpm2, dpm++2s_a, dpm++2m, dpm++2mv2, ipndm, ipndm_v, lcm, ddim_trailing, tcd}\n");
     printf("                                     sampling method (default: \"euler_a\")\n");
     printf("  --steps  STEPS                     number of sample steps (default: 20)\n");
@@ -250,7 +251,7 @@ void print_usage(int argc, const char* argv[]) {
     printf("  --high-noise-skip-layers LAYERS    (high noise) Layers to skip for SLG steps: (default: [7,8,9])\n");
     printf("  --high-noise-skip-layer-start      (high noise) SLG enabling point: (default: 0.01)\n");
     printf("  --high-noise-skip-layer-end END    (high noise) SLG disabling point: (default: 0.2)\n");
-    printf("  --high-noise-scheduler {discrete, karras, exponential, ays, gits} Denoiser sigma scheduler (default: discrete)\n");
+    printf("  --high-noise-scheduler {discrete, karras, exponential, ays, gits, smoothstep} Denoiser sigma scheduler (default: discrete)\n");
     printf("  --high-noise-sampling-method {euler, euler_a, heun, dpm2, dpm++2s_a, dpm++2m, dpm++2mv2, ipndm, ipndm_v, lcm, ddim_trailing, tcd}\n");
     printf("                                     (high noise) sampling method (default: \"euler_a\")\n");
     printf("  --high-noise-steps  STEPS          (high noise) number of sample steps (default: -1 = auto)\n");
@@ -1279,6 +1280,21 @@ int main(int argc, const char* argv[]) {
                     current_image = upscaled_image;
                 }
                 results[i] = current_image;  // Set the final upscaled image as the result
+            }
+        }
+    }
+
+    // create directory if not exists
+    {
+        namespace fs            = std::filesystem;
+        const fs::path out_path = params.output_path;
+        if (const fs::path out_dir = out_path.parent_path(); !out_dir.empty()) {
+            std::error_code ec;
+            fs::create_directories(out_dir, ec);  // OK if already exists
+            if (ec) {
+                fprintf(stderr, "failed to create directory '%s': %s\n",
+                        out_dir.string().c_str(), ec.message().c_str());
+                return 1;
             }
         }
     }
