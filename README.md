@@ -52,7 +52,7 @@ API and command-line option may change frequently.***
     - [Ovis-Image](./docs/ovis_image.md)
   - Image Edit Models
     - [FLUX.1-Kontext-dev](./docs/kontext.md)
-    - [Qwen Image Edit/Qwen Image Edit 2509](./docs/qwen_image_edit.md)
+    - [Qwen Image Edit series](./docs/qwen_image_edit.md)
   - Video Models
     - [Wan2.1/Wan2.2](./docs/wan.md)
   - [PhotoMaker](https://github.com/TencentARC/PhotoMaker) support.
@@ -132,7 +132,7 @@ If you want to improve performance or reduce VRAM/RAM usage, please refer to [pe
 - [FLUX.1-Kontext-dev](./docs/kontext.md)
 - [Chroma](./docs/chroma.md)
 - [🔥Qwen Image](./docs/qwen_image.md)
-- [🔥Qwen Image Edit/Qwen Image Edit 2509](./docs/qwen_image_edit.md)
+- [🔥Qwen Image Edit series](./docs/qwen_image_edit.md)
 - [🔥Wan2.1/Wan2.2](./docs/wan.md)
 - [🔥Z-Image](./docs/z_image.md)
 - [Ovis-Image](./docs/ovis_image.md)
@@ -143,6 +143,7 @@ If you want to improve performance or reduce VRAM/RAM usage, please refer to [pe
 - [Using TAESD to faster decoding](./docs/taesd.md)
 - [Docker](./docs/docker.md)
 - [Quantization and GGUF](./docs/quantization_and_gguf.md)
+- [Inference acceleration via caching](./docs/caching.md)
 
 ## Bindings
 

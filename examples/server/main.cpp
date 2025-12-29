@@ -104,9 +104,10 @@ std::string iso_timestamp_now() {
 struct SDSvrParams {
     std::string listen_ip = "127.0.0.1";
     int listen_port       = 1234;
-    bool normal_exit      = false;
-    bool verbose          = false;
-    bool color            = false;
+    std::string serve_html_path;
+    bool normal_exit = false;
+    bool verbose     = false;
+    bool color       = false;
 
     ArgOptions get_options() {
         ArgOptions options;
@@ -115,7 +116,11 @@ struct SDSvrParams {
             {"-l",
              "--listen-ip",
              "server listen ip (default: 127.0.0.1)",
-             &listen_ip}};
+             &listen_ip},
+            {"",
+             "--serve-html-path",
+             "path to HTML file to serve at root (optional)",
+             &serve_html_path}};
 
         options.int_options = {
             {"",
@@ -151,12 +156,17 @@ struct SDSvrParams {
 
     bool process_and_check() {
         if (listen_ip.empty()) {
-            fprintf(stderr, "error: the following arguments are required: listen_ip\n");
+            LOG_ERROR("error: the following arguments are required: listen_ip");
             return false;
         }
 
         if (listen_port < 0 || listen_port > 65535) {
-            fprintf(stderr, "error: listen_port should be in the range [0, 65535]\n");
+            LOG_ERROR("error: listen_port should be in the range [0, 65535]");
+            return false;
+        }
+
+        if (!serve_html_path.empty() && !fs::exists(serve_html_path)) {
+            LOG_ERROR("error: serve_html_path file does not exist: %s", serve_html_path.c_str());
             return false;
         }
         return true;
@@ -167,6 +177,7 @@ struct SDSvrParams {
         oss << "SDSvrParams {\n"
             << "  listen_ip: " << listen_ip << ",\n"
             << "  listen_port: \"" << listen_port << "\",\n"
+            << "  serve_html_path: \"" << serve_html_path << "\",\n"
             << "}";
         return oss.str();
     }
@@ -256,69 +267,36 @@ std::vector<uint8_t> write_image_to_vector(
     return buffer;
 }
 
-/* Enables Printing the log level tag in color using ANSI escape codes */
 void sd_log_cb(enum sd_log_level_t level, const char* log, void* data) {
     SDSvrParams* svr_params = (SDSvrParams*)data;
-    int tag_color;
-    const char* level_str;
-    FILE* out_stream = (level == SD_LOG_ERROR) ? stderr : stdout;
-
-    if (!log || (!svr_params->verbose && level <= SD_LOG_DEBUG)) {
-        return;
-    }
-
-    switch (level) {
-        case SD_LOG_DEBUG:
-            tag_color = 37;
-            level_str = "DEBUG";
-            break;
-        case SD_LOG_INFO:
-            tag_color = 34;
-            level_str = "INFO";
-            break;
-        case SD_LOG_WARN:
-            tag_color = 35;
-            level_str = "WARN";
-            break;
-        case SD_LOG_ERROR:
-            tag_color = 31;
-            level_str = "ERROR";
-            break;
-        default: /* Potential future-proofing */
-            tag_color = 33;
-            level_str = "?????";
-            break;
-    }
-
-    if (svr_params->color == true) {
-        fprintf(out_stream, "\033[%d;1m[%-5s]\033[0m ", tag_color, level_str);
-    } else {
-        fprintf(out_stream, "[%-5s] ", level_str);
-    }
-    fputs(log, out_stream);
-    fflush(out_stream);
+    log_print(level, log, svr_params->verbose, svr_params->color);
 }
 
 int main(int argc, const char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--version") {
+        std::cout << version_string() << "\n";
+        return EXIT_SUCCESS;
+    }
     SDSvrParams svr_params;
     SDContextParams ctx_params;
     SDGenerationParams default_gen_params;
     parse_args(argc, argv, svr_params, ctx_params, default_gen_params);
 
     sd_set_log_callback(sd_log_cb, (void*)&svr_params);
+    log_verbose = svr_params.verbose;
+    log_color   = svr_params.color;
 
-    if (svr_params.verbose) {
-        printf("%s", sd_get_system_info());
-        printf("%s\n", svr_params.to_string().c_str());
-        printf("%s\n", ctx_params.to_string().c_str());
-        printf("%s\n", default_gen_params.to_string().c_str());
-    }
+    LOG_DEBUG("version: %s", version_string().c_str());
+    LOG_DEBUG("%s", sd_get_system_info());
+    LOG_DEBUG("%s", svr_params.to_string().c_str());
+    LOG_DEBUG("%s", ctx_params.to_string().c_str());
+    LOG_DEBUG("%s", default_gen_params.to_string().c_str());
 
     sd_ctx_params_t sd_ctx_params = ctx_params.to_sd_ctx_params_t(false, false, false);
     sd_ctx_t* sd_ctx              = new_sd_ctx(&sd_ctx_params);
 
     if (sd_ctx == nullptr) {
-        printf("new_sd_ctx_t failed\n");
+        LOG_ERROR("new_sd_ctx_t failed");
         return 1;
     }
 
@@ -345,7 +323,18 @@ int main(int argc, const char** argv) {
 
     // health
     svr.Get("/", [&](const httplib::Request&, httplib::Response& res) {
-        res.set_content(R"({"ok":true,"service":"sd-cpp-http"})", "application/json");
+        if (!svr_params.serve_html_path.empty()) {
+            std::ifstream file(svr_params.serve_html_path);
+            if (file) {
+                std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                res.set_content(content, "text/html");
+            } else {
+                res.status = 500;
+                res.set_content("Error: Unable to read HTML file", "text/plain");
+            }
+        } else {
+            res.set_content("Stable Diffusion Server is running", "text/plain");
+        }
     });
 
     // models endpoint (minimal)
@@ -431,9 +420,7 @@ int main(int argc, const char** argv) {
                 return;
             }
 
-            if (svr_params.verbose) {
-                printf("%s\n", gen_params.to_string().c_str());
-            }
+            LOG_DEBUG("%s\n", gen_params.to_string().c_str());
 
             sd_image_t init_image    = {(uint32_t)gen_params.width, (uint32_t)gen_params.height, 3, nullptr};
             sd_image_t control_image = {(uint32_t)gen_params.width, (uint32_t)gen_params.height, 3, nullptr};
@@ -467,7 +454,7 @@ int main(int argc, const char** argv) {
                     gen_params.pm_style_strength,
                 },  // pm_params
                 ctx_params.vae_tiling_params,
-                gen_params.easycache_params,
+                gen_params.cache_params,
             };
 
             sd_image_t* results = nullptr;
@@ -490,7 +477,7 @@ int main(int argc, const char** argv) {
                                                          results[i].channel,
                                                          output_compression);
                 if (image_bytes.empty()) {
-                    printf("write image to mem failed\n");
+                    LOG_ERROR("write image to mem failed");
                     continue;
                 }
 
@@ -611,9 +598,7 @@ int main(int argc, const char** argv) {
                 return;
             }
 
-            if (svr_params.verbose) {
-                printf("%s\n", gen_params.to_string().c_str());
-            }
+            LOG_DEBUG("%s\n", gen_params.to_string().c_str());
 
             sd_image_t init_image    = {(uint32_t)gen_params.width, (uint32_t)gen_params.height, 3, nullptr};
             sd_image_t control_image = {(uint32_t)gen_params.width, (uint32_t)gen_params.height, 3, nullptr};
@@ -682,7 +667,7 @@ int main(int argc, const char** argv) {
                     gen_params.pm_style_strength,
                 },  // pm_params
                 ctx_params.vae_tiling_params,
-                gen_params.easycache_params,
+                gen_params.cache_params,
             };
 
             sd_image_t* results = nullptr;
@@ -735,7 +720,7 @@ int main(int argc, const char** argv) {
         }
     });
 
-    printf("listening on: %s:%d\n", svr_params.listen_ip.c_str(), svr_params.listen_port);
+    LOG_INFO("listening on: %s:%d\n", svr_params.listen_ip.c_str(), svr_params.listen_port);
     svr.listen(svr_params.listen_ip, svr_params.listen_port);
 
     // cleanup

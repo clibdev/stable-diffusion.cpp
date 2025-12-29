@@ -1340,7 +1340,7 @@ std::string ModelLoader::load_umt5_tokenizer_json() {
     return json_str;
 }
 
-bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, int n_threads_p) {
+bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, int n_threads_p, bool enable_mmap) {
     int64_t process_time_ms = 0;
     std::atomic<int64_t> read_time_ms(0);
     std::atomic<int64_t> memcpy_time_ms(0);
@@ -1390,6 +1390,15 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, int n_thread
             }
         }
 
+        std::unique_ptr<MmapWrapper> mmapped;
+        if (enable_mmap && !is_zip) {
+            LOG_DEBUG("using mmap for I/O");
+            mmapped = MmapWrapper::create(file_path);
+            if (!mmapped) {
+                LOG_WARN("failed to memory-map '%s'", file_path.c_str());
+            }
+        }
+
         int n_threads = is_zip ? 1 : std::min(num_threads_to_use, (int)file_tensors.size());
         if (n_threads < 1) {
             n_threads = 1;
@@ -1411,7 +1420,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, int n_thread
                         failed = true;
                         return;
                     }
-                } else {
+                } else if (!mmapped) {
                     file.open(file_path, std::ios::binary);
                     if (!file.is_open()) {
                         LOG_ERROR("failed to open '%s'", file_path.c_str());
@@ -1464,6 +1473,11 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, int n_thread
                                 zip_entry_noallocread(zip, (void*)buf, n);
                             }
                             zip_entry_close(zip);
+                        } else if (mmapped) {
+                            if (!mmapped->copy_data(buf, n, tensor_storage.offset)) {
+                                LOG_ERROR("read tensor data failed: '%s'", file_path.c_str());
+                                failed = true;
+                            }
                         } else {
                             file.seekg(tensor_storage.offset);
                             file.read(buf, n);
@@ -1520,6 +1534,11 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, int n_thread
                         i64_to_i32_vec((int64_t*)read_buf, (int32_t*)target_buf, tensor_storage.nelements());
                     }
                     if (tensor_storage.type != dst_tensor->type) {
+                        if (convert_buf == nullptr) {
+                            LOG_ERROR("read tensor data failed: too less memory for conversion");
+                            failed = true;
+                            return;
+                        }
                         convert_tensor((void*)target_buf,
                                        tensor_storage.type,
                                        convert_buf,
@@ -1583,7 +1602,8 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, int n_thread
 
 bool ModelLoader::load_tensors(std::map<std::string, struct ggml_tensor*>& tensors,
                                std::set<std::string> ignore_tensors,
-                               int n_threads) {
+                               int n_threads,
+                               bool enable_mmap) {
     std::set<std::string> tensor_names_in_file;
     std::mutex tensor_names_mutex;
     auto on_new_tensor_cb = [&](const TensorStorage& tensor_storage, ggml_tensor** dst_tensor) -> bool {
@@ -1626,7 +1646,7 @@ bool ModelLoader::load_tensors(std::map<std::string, struct ggml_tensor*>& tenso
         return true;
     };
 
-    bool success = load_tensors(on_new_tensor_cb, n_threads);
+    bool success = load_tensors(on_new_tensor_cb, n_threads, enable_mmap);
     if (!success) {
         LOG_ERROR("load tensors from file failed");
         return false;
@@ -1732,6 +1752,13 @@ bool ModelLoader::save_to_gguf_file(const std::string& file_path, ggml_type type
         // tensor_storage.ne[0], tensor_storage.ne[1], tensor_storage.ne[2], tensor_storage.ne[3],
         // tensor->n_dims, tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
 
+        if (!tensor->data) {
+            GGML_ASSERT(ggml_nelements(tensor) == 0);
+            // avoid crashing the gguf writer by setting a dummy pointer for zero-sized tensors
+            LOG_DEBUG("setting dummy pointer for zero-sized tensor %s", name.c_str());
+            tensor->data = ggml_get_mem_buffer(ggml_ctx);
+        }
+
         *dst_tensor = tensor;
 
         gguf_add_tensor(gguf_ctx, tensor);
@@ -1771,7 +1798,12 @@ int64_t ModelLoader::get_params_mem_size(ggml_backend_t backend, ggml_type type)
     return mem_size;
 }
 
-bool convert(const char* input_path, const char* vae_path, const char* output_path, sd_type_t output_type, const char* tensor_type_rules) {
+bool convert(const char* input_path,
+             const char* vae_path,
+             const char* output_path,
+             sd_type_t output_type,
+             const char* tensor_type_rules,
+             bool convert_name) {
     ModelLoader model_loader;
 
     if (!model_loader.init_from_file(input_path)) {
@@ -1785,7 +1817,9 @@ bool convert(const char* input_path, const char* vae_path, const char* output_pa
             return false;
         }
     }
-    model_loader.convert_tensors_name();
+    if (convert_name) {
+        model_loader.convert_tensors_name();
+    }
     bool success = model_loader.save_to_gguf_file(output_path, (ggml_type)output_type, tensor_type_rules);
     return success;
 }
