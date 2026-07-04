@@ -84,6 +84,7 @@ enum prediction_t {
     FLOW_PRED,
     FLUX_FLOW_PRED,
     SEFI_FLOW_PRED,
+    MINIT2I_FLOW_PRED,
     PREDICTION_COUNT
 };
 
@@ -379,6 +380,7 @@ typedef struct {
     sd_tiling_params_t vae_tiling_params;
     sd_cache_params_t cache;
     sd_hires_params_t hires;
+    int qwen_image_layers;
 } sd_img_gen_params_t;
 
 typedef struct {
