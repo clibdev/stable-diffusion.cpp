@@ -15,6 +15,11 @@ API and command-line option may change frequently.***
 
 ## 🔥Important News
 
+* **2026/10/16** 🚀 stable-diffusion.cpp adds **Day-0 support for MOSS-Image-Base / MOSS-Image-SFT**
+* **2026/10/16** 🚀 stable-diffusion.cpp adds **Day-0 support for FLUX.3 Image Klein / Klein Base**
+* **2026/09/20** 🚀 stable-diffusion.cpp adds **Day-0 support for Qwen-Image-2.1**
+* **2026/08/20** 🚀 stable-diffusion.cpp now supports **LTX-2.5**
+* **2026/08/04** 🚀 stable-diffusion.cpp adds **Day-1 support for MiniMax-H3**
 * **2026/06/25** 🚀 stable-diffusion.cpp now supports **Krea2**
 * **2026/06/04** 🚀 stable-diffusion.cpp now supports **Ideogram4**
 * **2026/05/31** 🚀 stable-diffusion.cpp now supports **PiD**
@@ -41,32 +46,51 @@ API and command-line option may change frequently.***
     - [SD3/SD3.5](./docs/sd3.md)
     - [FLUX.1-dev/FLUX.1-schnell](./docs/flux.md)
     - [FLUX.2-dev/FLUX.2-klein](./docs/flux2.md)
+    - [FLUX.3 Image Klein / Klein Base](./docs/flux3.md)
+    - [MOSS-Image-Base / MOSS-Image-SFT](./docs/moss_image.md)
+    - [Fibo 2.0 Dev](./docs/fibo2.md)
     - [Lens](./docs/lens.md)
     - [Chroma](./docs/chroma.md)
     - [Chroma1-Radiance](./docs/chroma_radiance.md)
     - [Qwen Image](./docs/qwen_image.md)
+    - [Qwen Image 2.1](./docs/qwen_image_2.1.md)
     - [PiD](./docs/pid.md)
     - [LongCat Image](./docs/longcat_image.md)
     - [Z-Image](./docs/z_image.md)
+    - [Z-Image L2P](./docs/z_image_l2p.md)
     - [MiniT2I](./docs/minit2i.md)
+    - [SenseNova U1.5](./docs/sensenova_u1.md)
     - [Ovis-Image](./docs/ovis_image.md)
     - [Anima](./docs/anima.md)
     - [ERNIE-Image](./docs/ernie_image.md)
     - [Boogu Image](./docs/boogu_image.md)
     - [Krea2](./docs/krea2.md)
+    - [Mage-Flow](./docs/mage_flow.md)
     - [SeFi-Image](./docs/sefi_image.md)
     - [HiDream-O1-Image](./docs/hidream_o1_image.md)
     - [Ideogram4](./docs/ideogram4.md)
-  - Image Edit Models
+    - [LLaDA-Image](./docs/llada_image.md)
+    - [Ming-Image Design](./docs/ming_image.md)
+    - [PixArt](./docs/pixart.md)
+    - [Iris-3B](./docs/iris.md)
+  - [Image Edit Models](./docs/edit.md)
     - [FLUX.1-Kontext-dev](./docs/kontext.md)
     - [Qwen Image Edit series](./docs/qwen_image_edit.md)
     - [LongCat Image Edit](./docs/longcat_image.md)
     - [Boogu Image Edit](./docs/boogu_image.md)
+    - [Mage-Flow-Edit](./docs/mage_flow.md#image-editing)
+    - [LLaDA-Image Edit](./docs/llada_image.md#image-editing)
+    - [Fibo 2.0 Dev / Edit Turbo](./docs/fibo2.md#editing-and-turbo)
   - Video Models
     - [Wan2.1/Wan2.2](./docs/wan.md)
-    - [LTX-2.3](./docs/ltx2.md)
+    - [MiniMax-H3](./docs/minimax_h3.md)
+    - [LTX-2.3/LTX-2.5](./docs/ltx2.md)
+    - [HunyuanVideo 1.5](./docs/hunyuan_video.md)
+    - [LingBot-Video](./docs/lingbot_video.md)
   - [PhotoMaker](./docs/photo_maker.md) support.
+  - [IP-Adapter](./docs/ip_adapter.md) support (SD 1.5 and SDXL, including Plus)
   - Control Net support with SD 1.5
+  - [ADetailer](./docs/adetailer.md)
   - LoRA support, same as [stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Features#lora)
   - Latent Consistency Models support (LCM/LCM-LoRA)
   - Faster and memory efficient latent decoding with [TAESD](./docs/taesd.md)
@@ -120,7 +144,7 @@ API and command-line option may change frequently.***
     - Stable Diffusion v1.5 from https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5 
 
     ```sh
-    curl -L -O https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors
+    curl -L -O https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors
     ```
 
 ### Generate an image with just one command
@@ -138,12 +162,14 @@ For runtime and parameter backend placement, see the [backend selection guide](.
 
 ## More Guides
 
+- [Troubleshooting](./docs/troubleshooting.md)
 - [Backend selection](./docs/backend.md)
 - [RPC](./docs/rpc.md)
 - [LoRA](./docs/lora.md)
 - [LCM/LCM-LoRA](./docs/lcm.md)
 - [Docker](./docs/docker.md)
 - [Quantization and GGUF](./docs/quantization_and_gguf.md)
+- [INT8 convrot safetensors](./docs/int8_convrot.md)
 - [Inference acceleration via caching](./docs/caching.md)
 
 ## Bindings
@@ -162,7 +188,7 @@ These projects wrap `stable-diffusion.cpp` for easier use in other languages/fra
 
 These projects use `stable-diffusion.cpp` as a backend for their image generation.
 
-- [Jellybox](https://jellybox.com)
+- [GIMP Plugins](https://github.com/themanyone/gimp-plugins)
 - [Stable Diffusion GUI](https://github.com/fszontagh/sd.cpp.gui.wx)
 - [Stable Diffusion CLI-GUI](https://github.com/piallai/stable-diffusion.cpp)
 - [Local Diffusion](https://github.com/rmatif/Local-Diffusion)
@@ -170,29 +196,10 @@ These projects use `stable-diffusion.cpp` as a backend for their image generatio
 - [LocalAI](https://github.com/mudler/LocalAI)
 - [Neural-Pixel](https://github.com/Luiz-Alcantara/Neural-Pixel)
 - [KoboldCpp](https://github.com/LostRuins/koboldcpp)
+- [Kokon](https://github.com/GabrieleLozupone/kokon)
 
 ## Contributors
 
 Thank you to all the people who have already contributed to stable-diffusion.cpp!
 
 [![Contributors](https://contrib.rocks/image?repo=leejet/stable-diffusion.cpp)](https://github.com/leejet/stable-diffusion.cpp/graphs/contributors)
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=leejet/stable-diffusion.cpp&type=Date)](https://star-history.com/#leejet/stable-diffusion.cpp&Date)
-
-## References
-
-- [ggml](https://github.com/ggml-org/ggml)
-- [diffusers](https://github.com/huggingface/diffusers)
-- [stable-diffusion](https://github.com/CompVis/stable-diffusion)
-- [sd3-ref](https://github.com/Stability-AI/sd3-ref)
-- [stable-diffusion-stability-ai](https://github.com/Stability-AI/stablediffusion)
-- [stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
-- [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
-- [k-diffusion](https://github.com/crowsonkb/k-diffusion)
-- [latent-consistency-model](https://github.com/luosiallen/latent-consistency-model)
-- [generative-models](https://github.com/Stability-AI/generative-models/)
-- [PhotoMaker](https://github.com/TencentARC/PhotoMaker)
-- [Wan2.1](https://github.com/Wan-Video/Wan2.1)
-- [Wan2.2](https://github.com/Wan-Video/Wan2.2)

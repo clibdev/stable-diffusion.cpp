@@ -2,7 +2,11 @@
 #define __SD_MODEL_DIFFUSION_QWEN_IMAGE_HPP__
 
 #include <memory>
+#include "core/ggml_extend_backend.h"
+#include "core/ggml_tensor_utils.h"
+#include "core/pe_cache.h"
 
+#include "core/util.h"
 #include "model/common/block.hpp"
 #include "model/diffusion/dit.hpp"
 #include "model/diffusion/flux.hpp"
@@ -48,9 +52,9 @@ namespace Qwen {
                     }
                 }
             }
-            LOG_DEBUG("qwen_image: num_layers = %d, zero_cond_t = %s",
-                      config.num_layers,
-                      config.zero_cond_t ? "true" : "false");
+            LOG_VERBOSE("qwen_image: num_layers = %d, zero_cond_t = %s",
+                        config.num_layers,
+                        config.zero_cond_t ? "true" : "false");
             return config;
         }
     };
@@ -102,9 +106,9 @@ namespace Qwen {
             }
         }
 
-        ggml_tensor* forward(GGMLRunnerContext* ctx,
-                             ggml_tensor* timesteps,
-                             ggml_tensor* addition_t_cond = nullptr) {
+        virtual ggml_tensor* forward(GGMLRunnerContext* ctx,
+                                     ggml_tensor* timesteps,
+                                     ggml_tensor* addition_t_cond = nullptr) {
             // timesteps: [N,]
             // return: [N, embedding_dim]
             auto timestep_embedder = std::dynamic_pointer_cast<TimestepEmbedding>(blocks["timestep_embedder"]);
@@ -182,7 +186,7 @@ namespace Qwen {
             auto to_v     = std::dynamic_pointer_cast<Linear>(blocks["to_v"]);
             auto to_out_0 = std::dynamic_pointer_cast<Linear>(blocks["to_out.0"]);
 
-            if (sd_backend_is(ctx->backend, "Vulkan")) {
+            if (sd_backend_is(ctx->backend, "Vulkan") || sd_backend_is(ctx->backend, "ROCm")) {
                 to_out_0->set_force_prec_f32(true);
             }
 
@@ -415,10 +419,14 @@ namespace Qwen {
 
     public:
         QwenImageModel() {}
-        QwenImageModel(QwenImageConfig config)
+        QwenImageModel(QwenImageConfig config,
+                       std::shared_ptr<QwenTimestepProjEmbeddings> time_text_embed = nullptr)
             : config(config) {
-            int64_t inner_dim         = config.num_attention_heads * config.attention_head_dim;
-            blocks["time_text_embed"] = std::shared_ptr<GGMLBlock>(new QwenTimestepProjEmbeddings(inner_dim, config.use_additional_t_cond));
+            int64_t inner_dim = config.num_attention_heads * config.attention_head_dim;
+            if (time_text_embed == nullptr) {
+                time_text_embed = std::make_shared<QwenTimestepProjEmbeddings>(inner_dim, config.use_additional_t_cond);
+            }
+            blocks["time_text_embed"] = std::move(time_text_embed);
             blocks["txt_norm"]        = std::shared_ptr<GGMLBlock>(new RMSNorm(config.joint_attention_dim, 1e-6f));
             blocks["img_in"]          = std::shared_ptr<GGMLBlock>(new Linear(config.in_channels, inner_dim));
             blocks["txt_in"]          = std::shared_ptr<GGMLBlock>(new Linear(config.joint_attention_dim, inner_dim));
@@ -516,7 +524,7 @@ namespace Qwen {
                 if (input->ne[3] == 1) {
                     input = ggml_reshape_4d(ctx->ggml_ctx, input, input->ne[0], input->ne[1], 1, input->ne[2]);
                 }
-                return DiT::patchify(ctx->ggml_ctx, input, 1, config.patch_size, config.patch_size, N);
+                return DiT::patchify_3d(ctx->ggml_ctx, input, 1, config.patch_size, config.patch_size, N);
             };
 
             auto img           = patchify_input(x);
@@ -554,10 +562,11 @@ namespace Qwen {
     };
 
     struct QwenImageRunner : public DiffusionModelRunner {
+        sd::PECache pe_cache_;
+
     public:
         QwenImageConfig config;
         QwenImageModel qwen_image;
-        std::vector<float> pe_vec;
         std::vector<float> modulate_index_vec;
         std::vector<int32_t> additional_t_cond_vec;
         SDVersion version;
@@ -566,12 +575,21 @@ namespace Qwen {
                         const String2TensorStorage& tensor_storage_map      = {},
                         const std::string prefix                            = "",
                         SDVersion version                                   = VERSION_QWEN_IMAGE,
-                        bool zero_cond_t                                    = false,
-                        std::shared_ptr<RunnerWeightManager> weight_manager = nullptr)
+                        std::shared_ptr<RunnerWeightManager> weight_manager = nullptr,
+                        const char* model_args                              = nullptr)
             : DiffusionModelRunner(backend, prefix, weight_manager),
               config(QwenImageConfig::detect_from_weights(tensor_storage_map, prefix)),
               version(version) {
-            config.zero_cond_t = config.zero_cond_t || zero_cond_t;
+            for (const auto& [key, value] : parse_key_value_args(model_args, "model arg")) {
+                if (key == "qwen_image_zero_cond_t") {
+                    bool parsed = false;
+                    if (parse_strict_bool(value, parsed)) {
+                        config.zero_cond_t = config.zero_cond_t || parsed;
+                    } else {
+                        LOG_WARN("ignoring invalid Qwen Image model arg '%s=%s'", key.c_str(), value.c_str());
+                    }
+                }
+            }
             if (version == VERSION_QWEN_IMAGE_LAYERED) {
                 config.use_additional_t_cond = true;
             }
@@ -619,25 +637,24 @@ namespace Qwen {
                 ref_index_mode = Rope::RefIndexMode::DECREASE;
             }
 
-            pe_vec      = Rope::gen_qwen_image_pe(time_len,
-                                                  static_cast<int>(x->ne[1]),
-                                                  static_cast<int>(x->ne[0]),
-                                                  config.patch_size,
-                                                  batch_size,
-                                                  static_cast<int>(context->ne[1]),
-                                                  ref_latents,
-                                                  ref_index_mode,
-                                                  config.theta,
-                                                  circular_y_enabled,
-                                                  circular_x_enabled,
-                                                  config.axes_dim);
-            int pos_len = static_cast<int>(pe_vec.size() / config.axes_dim_sum / 2);
-            // LOG_DEBUG("pos_len %d", pos_len);
-            auto pe = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.axes_dim_sum / 2, pos_len);
-            // pe->data = pe_vec.data();
-            // print_ggml_tensor(pe, true, "pe");
-            // pe->data = nullptr;
-            set_backend_tensor_data(pe, pe_vec.data());
+            sd::PECacheKey pe_key("qwen_image.pe");
+            pe_key.add_shape(x).add_shape(context).add(config.theta).add(config.axes_dim).add(config.axes_dim_sum);
+            pe_key.add(circular_x_enabled).add(circular_y_enabled).add(time_len).add(batch_size).add(config.patch_size);
+            pe_key.add_shapes(ref_latents).add(ref_index_mode);
+            auto pe = make_input(pe_cache_.get_or_create(pe_key, [&]() {
+                auto pe_vec = finish_rope_pe(Rope::gen_qwen_image_pe(time_len,
+                                                                     static_cast<int>(x->ne[1]),
+                                                                     static_cast<int>(x->ne[0]),
+                                                                     config.patch_size,
+                                                                     batch_size,
+                                                                     static_cast<int>(context->ne[1]),
+                                                                     ref_latents,
+                                                                     ref_index_mode,
+                                                                     config.theta,
+                                                                     config.axes_dim));
+                int pos_len = static_cast<int>(pe_vec.size() / config.axes_dim_sum / 2);
+                return sd::Tensor<float>({2, 2, config.axes_dim_sum / 2, pos_len}, std::move(pe_vec));
+            }));
 
             ggml_tensor* modulate_index = nullptr;
             if (config.zero_cond_t) {
@@ -693,7 +710,7 @@ namespace Qwen {
                 return build_graph(x, timesteps, context, ref_latents, ref_index_mode);
             };
 
-            return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
+            return restore_trailing_singleton_dims(GGMLRunner::compute(get_graph, n_threads, false), x.dim());
         }
 
         sd::Tensor<float> compute(int n_threads,
@@ -705,8 +722,8 @@ namespace Qwen {
                            *diffusion_params.x,
                            *diffusion_params.timesteps,
                            tensor_or_empty(diffusion_params.context),
-                           diffusion_params.ref_latents ? *diffusion_params.ref_latents : empty_ref_latents,
-                           diffusion_params.ref_index_mode);
+                           diffusion_params.ref_latents && diffusion_params.ref_image_params.pass_to_dit ? *diffusion_params.ref_latents : empty_ref_latents,
+                           diffusion_params.ref_image_params.ref_index_mode);
         }
 
         void test() {
@@ -746,7 +763,7 @@ namespace Qwen {
                 GGML_ASSERT(!out_opt.empty());
                 out = std::move(out_opt);
                 print_sd_tensor(out);
-                LOG_DEBUG("qwen_image test done in %lldms", t1 - t0);
+                LOG_VERBOSE("qwen_image test done in %lldms", t1 - t0);
             }
         }
 
@@ -757,8 +774,8 @@ namespace Qwen {
             ggml_backend_t backend    = sd_backend_cpu_init();
             ggml_type model_data_type = GGML_TYPE_Q8_0;
 
-            auto model_manager        = std::make_shared<ModelManager>();
-            ModelLoader& model_loader = model_manager->loader();
+            auto model_manager = std::make_shared<ModelManager>();
+            ModelLoader model_loader;
             if (!model_loader.init_from_file_and_convert_name(file_path, "model.diffusion_model.")) {
                 LOG_ERROR("init model loader from file failed: '%s'", file_path.c_str());
                 return;
@@ -775,10 +792,10 @@ namespace Qwen {
                                                                                             tensor_storage_map,
                                                                                             "model.diffusion_model",
                                                                                             VERSION_QWEN_IMAGE,
-                                                                                            false,
                                                                                             model_manager);
 
-            if (!model_manager->register_runner_params("Qwen image test",
+            if (!model_manager->set_loader(model_loader) ||
+                !model_manager->register_runner_params(ModelComponent::Diffusion,
                                                        *qwen_image,
                                                        "model.diffusion_model",
                                                        ModelManager::ResidencyMode::ParamBackend,

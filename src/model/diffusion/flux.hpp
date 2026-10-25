@@ -1,9 +1,14 @@
 #ifndef __SD_MODEL_DIFFUSION_FLUX_HPP__
 #define __SD_MODEL_DIFFUSION_FLUX_HPP__
 
+#include <cinttypes>
 #include <memory>
 #include <vector>
+#include "core/ggml_extend_backend.h"
+#include "core/ggml_tensor_utils.h"
+#include "core/pe_cache.h"
 
+#include "core/util.h"
 #include "model/adapter/pulid.hpp"
 #include "model/common/rope.hpp"
 #include "model/diffusion/dit.hpp"
@@ -122,16 +127,16 @@ namespace Flux {
                     config.guidance_embed = true;
                 }
                 if (name.find("__x0__") != std::string::npos) {
-                    LOG_DEBUG("using x0 prediction");
+                    LOG_VERBOSE("using x0 prediction");
                     config.chroma_radiance_params.use_x0 = true;
                 }
                 if (name.find("__32x32__") != std::string::npos) {
-                    LOG_DEBUG("using patch size 32");
+                    LOG_VERBOSE("using patch size 32");
                     config.patch_size = 32;
                 }
                 if (name.find("img_in_patch.weight") != std::string::npos) {
                     actual_radiance_patch_size = tensor_storage.ne[0];
-                    LOG_DEBUG("actual radiance patch size: %" PRId64, actual_radiance_patch_size);
+                    LOG_VERBOSE("actual radiance patch size: %" PRId64, actual_radiance_patch_size);
                 }
                 if (name.find("distilled_guidance_layer.in_proj.weight") != std::string::npos) {
                     config.is_chroma = true;
@@ -168,7 +173,7 @@ namespace Flux {
             }
             if (actual_radiance_patch_size > 0 && actual_radiance_patch_size != config.patch_size) {
                 GGML_ASSERT(config.patch_size == 2 * actual_radiance_patch_size);
-                LOG_DEBUG("using fake x2 patch size");
+                LOG_VERBOSE("using fake x2 patch size");
                 config.chroma_radiance_params.fake_patch_size_x2 = true;
             }
             if (head_dim > 0) {
@@ -178,13 +183,13 @@ namespace Flux {
             for (int axis_dim : config.axes_dim) {
                 config.axes_dim_sum += axis_dim;
             }
-            LOG_DEBUG("flux: depth = %d, depth_single_blocks = %d, guidance_embed = %s, context_in_dim = %" PRId64 ", hidden_size = %" PRId64 ", num_heads = %d",
-                      config.depth,
-                      config.depth_single_blocks,
-                      config.guidance_embed ? "true" : "false",
-                      config.context_in_dim,
-                      config.hidden_size,
-                      config.num_heads);
+            LOG_VERBOSE("flux: depth = %d, depth_single_blocks = %d, guidance_embed = %s, context_in_dim = %" PRId64 ", hidden_size = %" PRId64 ", num_heads = %d",
+                        config.depth,
+                        config.depth_single_blocks,
+                        config.guidance_embed ? "true" : "false",
+                        config.context_in_dim,
+                        config.hidden_size,
+                        config.num_heads);
             return config;
         }
     };
@@ -705,11 +710,13 @@ namespace Flux {
         LastLayer(int64_t hidden_size,
                   int64_t patch_size,
                   int64_t out_channels,
-                  bool prune_mod = false,
-                  bool bias      = true)
+                  bool prune_mod       = false,
+                  bool bias            = true,
+                  int64_t patch_volume = 0)
             : prune_mod(prune_mod) {
             blocks["norm_final"] = std::shared_ptr<GGMLBlock>(new LayerNorm(hidden_size, 1e-06f, false));
-            blocks["linear"]     = std::shared_ptr<GGMLBlock>(new Linear(hidden_size, patch_size * patch_size * out_channels, bias));
+            int64_t out_dim      = (patch_volume > 0 ? patch_volume : patch_size * patch_size) * out_channels;
+            blocks["linear"]     = std::shared_ptr<GGMLBlock>(new Linear(hidden_size, out_dim, bias));
             if (!prune_mod) {
                 blocks["adaLN_modulation.1"] = std::shared_ptr<GGMLBlock>(new Linear(hidden_size, 2 * hidden_size, bias));
             }
@@ -1392,26 +1399,37 @@ namespace Flux {
     };
 
     struct FluxRunner : public DiffusionModelRunner {
+        sd::PECache pe_cache_;
+
     public:
         FluxConfig config;
         Flux flux;
-        std::vector<float> pe_vec;
         std::vector<float> mod_index_arange_vec;
         std::vector<float> dct_vec;
         sd::Tensor<float> guidance_tensor;
         SDVersion version;
-        bool use_mask = false;
+        bool use_mask = true;
 
         FluxRunner(ggml_backend_t backend,
                    const String2TensorStorage& tensor_storage_map      = {},
                    const std::string prefix                            = "",
                    SDVersion version                                   = VERSION_FLUX,
-                   bool use_mask                                       = false,
-                   std::shared_ptr<RunnerWeightManager> weight_manager = nullptr)
+                   std::shared_ptr<RunnerWeightManager> weight_manager = nullptr,
+                   const char* model_args                              = nullptr)
             : DiffusionModelRunner(backend, prefix, weight_manager),
               config(FluxConfig::detect_from_weights(tensor_storage_map, prefix, version)),
-              version(version),
-              use_mask(use_mask) {
+              version(version) {
+            for (const auto& [key, value] : parse_key_value_args(model_args, "model arg")) {
+                if (key == "chroma_use_dit_mask") {
+                    bool parsed = true;
+                    if (parse_strict_bool(value, parsed)) {
+                        use_mask = parsed;
+                    } else {
+                        LOG_WARN("ignoring invalid Chroma DiT model arg '%s=%s'", key.c_str(), value.c_str());
+                    }
+                }
+            }
+
             if (config.is_chroma) {
                 LOG_INFO("Using pruned modulation (Chroma)");
             }
@@ -1532,27 +1550,26 @@ namespace Flux {
             } else if (version == VERSION_OVIS_IMAGE) {
                 txt_arange_dims = {1, 2};
             }
-            pe_vec      = Rope::gen_flux_pe(static_cast<int>(x->ne[1]),
-                                            static_cast<int>(x->ne[0]),
-                                            config.patch_size,
-                                            static_cast<int>(x->ne[3]),
-                                            static_cast<int>(context->ne[1]),
-                                            txt_arange_dims,
-                                            ref_latents,
-                                            ref_index_mode,
-                                            config.ref_index_scale,
-                                            config.theta,
-                                            circular_y_enabled,
-                                            circular_x_enabled,
-                                            config.axes_dim,
-                                            sd_version_is_longcat(version));
-            int pos_len = static_cast<int>(pe_vec.size() / config.axes_dim_sum / 2);
-            // LOG_DEBUG("pos_len %d", pos_len);
-            auto pe = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.axes_dim_sum / 2, pos_len);
-            // pe->data = pe_vec.data();
-            // print_ggml_tensor(pe);
-            // pe->data = nullptr;
-            set_backend_tensor_data(pe, pe_vec.data());
+            sd::PECacheKey pe_key("flux.pe");
+            pe_key.add(version).add_shape(x).add_shape(context).add(config.patch_size).add(txt_arange_dims);
+            pe_key.add_shapes(ref_latents).add(ref_index_mode).add(config.ref_index_scale).add(config.theta).add(config.axes_dim);
+            pe_key.add(circular_x_enabled).add(circular_y_enabled);
+            auto pe = make_input(pe_cache_.get_or_create(pe_key, [&]() {
+                auto pe_vec     = finish_rope_pe(Rope::gen_flux_pe(static_cast<int>(x->ne[1]),
+                                                                   static_cast<int>(x->ne[0]),
+                                                                   config.patch_size,
+                                                                   static_cast<int>(x->ne[3]),
+                                                                   static_cast<int>(context->ne[1]),
+                                                                   txt_arange_dims,
+                                                                   ref_latents,
+                                                                   ref_index_mode,
+                                                                   config.ref_index_scale,
+                                                                   config.theta,
+                                                                   config.axes_dim,
+                                                                   sd_version_is_longcat(version)));
+                int64_t pos_len = static_cast<int64_t>(pe_vec.size() / config.axes_dim_sum / 2);
+                return sd::Tensor<float>({2, 2, config.axes_dim_sum / 2, pos_len}, std::move(pe_vec));
+            }));
 
             if (version == VERSION_CHROMA_RADIANCE) {
                 int patch_size     = config.patch_size;
@@ -1613,7 +1630,7 @@ namespace Flux {
                 return build_graph(x, timesteps, context, c_concat, y, guidance, ref_latents, ref_index_mode, skip_layers, pulid_id, pulid_id_weight);
             };
 
-            auto result = restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
+            auto result = restore_trailing_singleton_dims(GGMLRunner::compute(get_graph, n_threads, false), x.dim());
             return result;
         }
 
@@ -1631,8 +1648,8 @@ namespace Flux {
                            tensor_or_empty(diffusion_params.c_concat),
                            tensor_or_empty(diffusion_params.y),
                            tensor_or_empty(extra->guidance),
-                           diffusion_params.ref_latents ? *diffusion_params.ref_latents : empty_ref_latents,
-                           diffusion_params.ref_index_mode,
+                           diffusion_params.ref_latents && diffusion_params.ref_image_params.pass_to_dit ? *diffusion_params.ref_latents : empty_ref_latents,
+                           diffusion_params.ref_image_params.ref_index_mode,
                            extra->skip_layers ? *extra->skip_layers : empty_skip_layers,
                            tensor_or_empty(extra->pulid_id),
                            extra->pulid_id_weight);
@@ -1689,7 +1706,7 @@ namespace Flux {
                 GGML_ASSERT(!out_opt.empty());
                 out = std::move(out_opt);
                 print_sd_tensor(out);
-                LOG_DEBUG("flux test done in %lldms", t1 - t0);
+                LOG_VERBOSE("flux test done in %lldms", t1 - t0);
             }
         }
 
@@ -1698,8 +1715,8 @@ namespace Flux {
             ggml_backend_t backend    = sd_backend_cpu_init();
             ggml_type model_data_type = GGML_TYPE_COUNT;
 
-            auto model_manager        = std::make_shared<ModelManager>();
-            ModelLoader& model_loader = model_manager->loader();
+            auto model_manager = std::make_shared<ModelManager>();
+            ModelLoader model_loader;
             if (!model_loader.init_from_file_and_convert_name(file_path, "model.diffusion_model.")) {
                 LOG_ERROR("init model loader from file failed: '%s'", file_path.c_str());
                 return;
@@ -1718,10 +1735,10 @@ namespace Flux {
                                                                             tensor_storage_map,
                                                                             "model.diffusion_model",
                                                                             VERSION_FLUX2,
-                                                                            false,
                                                                             model_manager);
 
-            if (!model_manager->register_runner_params("Flux test",
+            if (!model_manager->set_loader(model_loader) ||
+                !model_manager->register_runner_params(ModelComponent::Diffusion,
                                                        *flux,
                                                        "model.diffusion_model",
                                                        ModelManager::ResidencyMode::ParamBackend,

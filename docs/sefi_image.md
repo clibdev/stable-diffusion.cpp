@@ -13,8 +13,8 @@ The SeFi-Image family ships in three scales (1B / 2B / 5B) and three families (B
 Convert the transformer and text encoder to sd.cpp safetensors:
 
 ```bash
-python3 script/convert_sefi.py     <hf_repo_dir>                          <out_dir>/sefi_<scale>_<family>.safetensors
-python3 script/convert_qwen3_vl.py  <hf_repo_dir>/Qwen3-VL-XB-Instruct    <out_dir>/qwen3_vl_<X>b.safetensors
+python3 scripts/convert_sefi.py     <hf_repo_dir>                          <out_dir>/sefi_<scale>_<family>.safetensors
+python3 scripts/convert_qwen3_vl.py  <hf_repo_dir>/Qwen3-VL-XB-Instruct    <out_dir>/qwen3_vl_<X>b.safetensors
 ```
 
 ## Variant defaults
@@ -32,19 +32,19 @@ The dispatcher picks `alpha` from the filename (`turbo` substring => 1.0, otherw
 ### 1B / 2B turbo
 
 ```
-./build/bin/sd-cli --diffusion-model /path/to/sefi_1b_turbo.safetensors --vae /path/to/flux2_ae.safetensors --llm /path/to/qwen3_vl_2b.safetensors -p "a photograph of an orange tabby cat sitting on a couch" --cfg-scale 1.0 --steps 4 -W 1024 -H 1024 -s 42 --diffusion-fa --offload-to-cpu -o out.png
+./build/bin/sd-cli --diffusion-model /path/to/sefi_1b_turbo.safetensors --vae /path/to/flux2_ae.safetensors --llm /path/to/qwen3_vl_2b.safetensors -p "a photograph of an orange tabby cat sitting on a couch" --cfg-scale 1.0 --steps 4 -W 1024 -H 1024 -s 42 --offload-to-cpu -o out.png
 ```
 
 ### 1B / 2B base
 
 ```
-./build/bin/sd-cli --diffusion-model /path/to/sefi_1b_base.safetensors --vae /path/to/flux2_ae.safetensors --llm /path/to/qwen3_vl_2b.safetensors -p "a photograph of an orange tabby cat sitting on a couch" --cfg-scale 4.0 --steps 50 -W 1024 -H 1024 -s 42 --diffusion-fa --offload-to-cpu -o out.png
+./build/bin/sd-cli --diffusion-model /path/to/sefi_1b_base.safetensors --vae /path/to/flux2_ae.safetensors --llm /path/to/qwen3_vl_2b.safetensors -p "a photograph of an orange tabby cat sitting on a couch" --cfg-scale 4.0 --steps 50 -W 1024 -H 1024 -s 42 --offload-to-cpu -o out.png
 ```
 
 ### 5B (needs streaming on 12 GiB VRAM)
 
 ```
-./build/bin/sd-cli --diffusion-model /path/to/sefi_5b_turbo.safetensors --vae /path/to/flux2_ae.safetensors --llm /path/to/qwen3_vl_4b.safetensors -p "a photograph of an orange tabby cat sitting on a couch" --cfg-scale 1.0 --steps 4 -W 1024 -H 1024 -s 42 --diffusion-fa --max-vram 8 --stream-layers --offload-to-cpu -o out.png
+./build/bin/sd-cli --diffusion-model /path/to/sefi_5b_turbo.safetensors --vae /path/to/flux2_ae.safetensors --llm /path/to/qwen3_vl_4b.safetensors -p "a photograph of an orange tabby cat sitting on a couch" --cfg-scale 1.0 --steps 4 -W 1024 -H 1024 -s 42 --max-vram 8 --offload-to-cpu -o out.png
 ```
 
 <img alt="SeFi-Image 5B turbo example" src="../assets/sefi_image/example.png" />

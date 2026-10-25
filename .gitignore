@@ -1,11 +1,16 @@
 build*/
 cmake-build-*/
 test/
+tests/
 .vscode/
 .idea/
 .cache/
 *.swp
 *.bat
+!/start-server.bat
+/start-server.local.sh
+/start-server.local.bat
+/start-server.local.ps1
 *.bin
 *.exe
 *.gguf
@@ -13,3 +18,7 @@ output*.png
 models*
 *.log
 preview.png
+.claude/
+CLAUDE.local.md
+.agents/
+.codex/
