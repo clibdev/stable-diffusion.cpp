@@ -11,6 +11,14 @@ The server currently exposes three API families:
 The `sdcpp API` is the native API surface.
 Its request schema is the same schema used by `sd_cpp_extra_args`.
 
+Image and video requests can include interleaved images in `prompt` or
+`negative_prompt` using `<image:ID>`. The native `sdcpp API` accepts a
+`prompt_images` object mapping each ID to a base64 image or image data URI.
+For `OpenAI API` and `sdapi`, pass `prompt_images` through `sd_cpp_extra_args`
+embedded inside `prompt`. IDs are resolved against that request's images.
+See [images in prompts](../../docs/guides/prompt_images.md) for examples and supported
+LLM encoders.
+
 Global LoRA rule:
 
 - Server APIs do not parse LoRA tags embedded inside `prompt`.
@@ -85,7 +93,7 @@ available during loading. Model lists are empty when no model is loaded;
 | GET | `/sdcpp/v1/model-files` | `{files: [{id, name, category, root, relative_path}], errors: [...]}` |
 | POST | `/sdcpp/v1/models/refresh` | Rescan recipes and files; return `{errors: [...]}` |
 | GET | `/sdcpp/v1/models/status` | Current state, recipe, selection, error, loading time and optional revision |
-| POST | `/sdcpp/v1/models/load` | Load the submitted recipe and selection; return status after completion |
+| POST | `/sdcpp/v1/models/load` | Load the submitted recipe and selection; return status after completion. A load is a no-op returning the current status with `already_loaded: true` only when the state is ready and the fully resolved selection, the complete recipe object, and the resolved component paths all match the active model; a catalog refresh with modified recipe metadata or a retargeted model path therefore reloads even with an unchanged recipe ID and selection |
 | POST | `/sdcpp/v1/models/unload` | Release the active context; return empty status |
 
 Load request:
@@ -221,6 +229,9 @@ values reflect these declarations. A loaded recipe is snapshotted: refreshing
 recipe files does not change the active context's capabilities until reloading.
 Command-line preloading uses the runtime-only all-features recipe instead of model-family inference
 and component paths; variant-specific recipe declarations are more precise.
+Known high-noise sampling settings and `moe_boundary` are ignored when no
+high-noise stage is loaded, and `vace_strength` is ignored by non-VACE models.
+Actual control-frame inputs still require VACE.
 
 These declarations govern the Web UI and advertised capabilities, not API
 request validation. Existing generation APIs continue accepting their existing
@@ -244,6 +255,7 @@ the same one-recipe-per-file schema:
   "id": "my-flux",
   "name": "My FLUX",
   "description": "FLUX.1 dev",
+  "size_multiple": 16,
   "model_url": "https://huggingface.co/black-forest-labs/FLUX.1-dev",
   "slots": [
     {"id": "diffusion_model", "required": true},
@@ -259,13 +271,61 @@ the same one-recipe-per-file schema:
 
 IDs contain 1–128 ASCII letters, digits, dots, underscores or hyphens.
 `name`, `schema_version: 1` and `slots` are required; `description` and
-`model_url`, `required_any`, `defaults`, `context`, `features` and `disabled_features` are optional. Each slot requires only `id` and boolean `required`.
+`model_url`, `required_any`, `defaults`, `context`, `features`, `disabled_features`
+and `size_multiple`, `video_constraints` are optional. Each slot requires only `id` and boolean `required`.
 The server supplies the default label and search directories for each slot.
 An optional nonempty `label` overrides the display name, for example
 `{"id": "diffusion_model", "label": "Low-noise diffusion model", "required": true}`.
 Legacy `category` fields remain accepted, but must match one of the slot's
 supported directories; they cannot redefine or restrict its search directories.
 At least one required `model` or `diffusion_model` slot is necessary.
+
+An optional top-level `models` object maps slot IDs to file IDs, providing
+recipe-local defaults for component selection. A load request may omit
+`models` entirely and load with the recipe's defaults. Selections sent in the
+request always override recipe defaults, slot by slot. An empty string
+disables a slot's recipe default (omitting the slot selects it); the empty
+key is then normalized out of the reported selection, so for slots without a
+recipe default an empty selection loads identically to an omitted one.
+
+`size_multiple` is a positive integer from 1 to 4096 that declares the width and
+height increment used by the web UI. It defaults to `8` when omitted; the UI also
+uses `8` before a recipe is selected. For example, `"size_multiple": 16` makes
+generated size presets multiples of 16. Exact dimensions that do not match the
+increment require correction before submission. This is recipe metadata, not a
+generation parameter, and does not change the core model's alignment behavior.
+
+`video_constraints` is optional metadata for the web UI's Frames / Duration
+controls. It does not override the runtime's model-specific rules. For example:
+
+```json
+"video_constraints": {
+  "frame_step": 4,
+  "frame_offset": 1,
+  "frame_rounding": "floor",
+  "min_frames": 1
+}
+```
+
+Legal frame counts are `frame_step * n + frame_offset`, with integer `n >= 0`,
+within the inclusive `min_frames` / `max_frames` range. All fields are optional:
+
+| Field | Default | Accepted values |
+| --- | --- | --- |
+| `frame_step` | `1` | Integer 1–4096 |
+| `frame_offset` | `0` | Integer 0 to `frame_step - 1` |
+| `frame_rounding` | `"floor"` | `"floor"` or `"ceil"` |
+| `min_frames` | `1` | Integer 1–4096 |
+| `max_frames` | `4096` | Integer 1–4096, at least `min_frames` |
+| `fixed_fps` | Unset | Integer 1–240; locks the FPS control |
+
+The range must contain at least one legal frame count. Unknown keys are rejected.
+Omitting the object adds no frame alignment in the UI. `defaults.fps` only sets
+the initial FPS; it does not lock it. The UI multiplies requested duration by FPS,
+aligns using the declared rounding direction, then clamps to the legal range.
+Duration stays in the UI; generation requests still send only `video_frames` and
+`fps`. Switching input modes preserves the aligned length. Changing FPS keeps
+frames in Frames mode, and keeps the requested seconds in Duration mode.
 
 `model_url` is an optional HTTPS Hugging Face model repository link, shown beside
 the recipe description. Built-ins link to the model's author/publisher, not repacks.
@@ -726,12 +786,64 @@ Field types:
 | `queue_position` | `integer` |
 | `result` | `object \| null` |
 | `error` | `object \| null` |
+| `progress` | `object` |
 | `preview` | `object \| null` |
 
 `created`, `started`, and `completed` are integer Unix timestamps in
 **milliseconds**. Subtract `started` from `completed` and divide by 1000 to get
 the elapsed generation time in seconds, including output encoding and excluding
 queue time.
+
+`progress` is available independently of the preview setting, for both image
+and video jobs. Continue polling until `status` is terminal: a sampling pass
+can finish before decoding, ADetailer, or output encoding finishes.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `progress.stage` | `string` | Current execution stage; see below |
+| `progress.detail` | `string` | Stage detail, or an empty string |
+| `progress.pass` | `integer` | Sampling pass number within the job; zero before sampling |
+| `progress.completed` | `integer \| null` | Completed units in the current stage/pass |
+| `progress.total` | `integer \| null` | Actual total units, or null when unknown |
+| `progress.unit` | `string \| null` | `steps` for sampling, `images` for image output encoding; null when uncounted |
+| `progress.stage_elapsed_ms` | `integer` | Elapsed time in the current stage/detail/pass |
+| `progress.elapsed_ms` | `integer` | Job execution time, excluding queue time; zero before execution |
+
+Stages include `queued`, `waiting` (waiting for the execution lock), `preparing`,
+`conditioning`, `sampling`, `vae_encode`, `vae_decode`, `audio_decode`,
+`upscaling`, `adetailer`, and `encoding`. Stages may repeat or be skipped.
+Details include `positive_prompt` / `negative_prompt` / `image_condition` for
+conditioning, `high_noise` / `low_noise` for two-stage sampling, and `image` /
+`video` for output encoding. During ADetailer, `detail` identifies the inner
+stage, such as `conditioning` or `sampling`. Clients should tolerate unknown
+stage, detail, and unit values.
+
+Sampling counts completed logical steps using the actual schedule, including
+strength adjustments. Each new sampling pass increments `pass` and starts at
+zero, including batch items, highres passes, high/low-noise passes, and ADetailer
+passes. The ratio is **current-pass progress**, not overall job completion.
+The progress snapshot is published atomically. Preview metadata still describes
+the preview frame, which may be older than the current progress.
+
+Unknown totals are represented by null counts, not an estimated percentage.
+For example, prompt encoding can report:
+
+```json
+"progress": {
+  "stage": "conditioning",
+  "detail": "positive_prompt",
+  "pass": 0,
+  "completed": null,
+  "total": null,
+  "unit": null,
+  "stage_elapsed_ms": 3200,
+  "elapsed_ms": 4100
+}
+```
+
+Elapsed times freeze when a job completes, fails, or is cancelled; the last
+stage is retained for inspection. Use `status` to determine the final outcome.
+Elapsed time alone does not indicate that computation is advancing.
 
 `preview` sub-fields:
 
@@ -874,7 +986,7 @@ Shared default fields used by both `img_gen` and `vid_gen`:
 | `output_format` | `string` |
 | `output_compression` | `integer` |
 
-`vae_tiling_params.tile_size_w` and `tile_size_h` are in **image pixels**, with `0` selecting the 256-pixel default. Both encode and decode use these sizes without an encoding multiplier. Positive `rel_size_w`/`rel_size_h` values override the corresponding absolute size: values up to 1 are dimension fractions, and values greater than 1 are target tile counts. Set `enabled` to use spatial tiling. Sizes are aligned down to the VAE scale factor and capped at the input dimensions; explicit sizes below the minimum supported tile size are rejected. These fields previously used latent units; see [VAE tiling](../../docs/performance.md#use-vae-tiling-to-reduce-encode-and-decode-memory-usage) for migration and OOM retry behavior.
+`vae_tiling_params.tile_size_w` and `tile_size_h` are in **image pixels**, with `0` selecting the 256-pixel default. Both encode and decode use these sizes without an encoding multiplier. Positive `rel_size_w`/`rel_size_h` values override the corresponding absolute size: values up to 1 are dimension fractions, and values greater than 1 are target tile counts. Set `enabled` to use spatial tiling. Sizes are aligned down to the VAE scale factor and capped at the input dimensions; explicit sizes below the minimum supported tile size are rejected. These fields previously used latent units; see [VAE tiling](../../docs/guides/performance.md#use-vae-tiling-to-reduce-encode-and-decode-memory-usage) for migration and OOM retry behavior.
 
 `vae_tiling_params.extra_tiling_args` accepts a key=value list. Supported video VAEs accept `temporal_tile_frames` (alias `temporal_tile_size`, default `4`) and `temporal_tile_overlap` (default `1`). Wan2.2 TI2V 5B uses `temporal_decode_frames` (default `1`) to decode multiple latent frames per forward pass, trading additional memory for throughput; other model versions ignore this option.
 LTX and Wan preserve causal state between temporal tiles. Hunyuan Video and TAEHV use overlap blending. MiniMax H3 keeps its model-specific fixed temporal windows because its latent-to-frame mapping is non-linear.
@@ -887,6 +999,7 @@ LTX and Wan preserve causal state between temporal tiles. Hunyuan Video and TAEH
 | `ref_image_args` | `string` |
 | `increase_ref_index` | `boolean` |
 | `control_strength` | `number` |
+| `control_type` | `string` |
 | `ip_adapter_strength` | `number` |
 | `hires` | `object` |
 | `hires.enabled` | `boolean` |
@@ -1067,6 +1180,7 @@ Example:
   "ref_image_args": "",
   "increase_ref_index": false,
   "control_strength": 0.9,
+  "control_type": "",
   "ip_adapter_strength": 1.0,
   "embed_image_metadata": true,
 
@@ -1144,7 +1258,7 @@ Example:
 
 Native image/video requests and SDAPI accept `image_preprocess` as a rule string
 or array of rule strings. OpenAI-compatible requests can supply it in
-`sd_cpp_extra_args`. See [Image preprocessing](../../docs/image_preprocessing.md)
+`sd_cpp_extra_args`. See [Image preprocessing](../../docs/guides/image_preprocessing.md)
 for one-time input geometry, native-resolution decoding, mask alignment, and
 `canny=true` for edge detection on any supported image input.
 
@@ -1171,7 +1285,7 @@ and `ref_images[]`. RGB-only models drop it, so sending RGBA is safe for every m
 
 If omitted or null:
 
-- single-image fields map to an empty `sd_image_t`
+- single-image fields clear the corresponding image tensor
 - array fields map to an empty C-style array, represented as `pointer = nullptr` and `count = 0`
 
 ### Field Mapping Summary
@@ -1192,6 +1306,7 @@ Top-level scalar fields:
 | `image_preprocess` | `string \| array<string>` |
 | `increase_ref_index` | `boolean` |
 | `control_strength` | `number` |
+| `control_type` | `string` |
 | `ip_adapter_strength` | `number` |
 | `embed_image_metadata` | `boolean` |
 | `preview` | `string` |
@@ -1504,7 +1619,7 @@ Example:
 - Other video model families currently ignore `ref_images`.
 - `features_by_mode.vid_gen` does not currently advertise `ref_images`; its absence is not an indication that MiniMax-H3 reference images are unsupported.
 
-See [MiniMax-H3 reference conditioning](../../docs/minimax_h3.md#reference-to-audio-video-conditioning) for model requirements and prompt examples.
+See [MiniMax-H3 reference conditioning](../../docs/models/minimax_h3.md#reference-to-audio-video-conditioning) for model requirements and prompt examples.
 
 ### LoRA Rules
 
@@ -1533,7 +1648,7 @@ Frame ordering rules:
 
 If omitted or null:
 
-- single-image fields map to an empty `sd_image_t`
+- single-image fields clear the corresponding image tensor
 - array fields map to an empty C-style array, represented as `pointer = nullptr` and `count = 0`
 
 ### Field Mapping Summary
@@ -1594,6 +1709,13 @@ Sampling fields:
 | `sample_params.guidance.slg.scale` | `number` |
 
 High-noise sampling fields:
+
+The two video stages share the scheduler, flow shift and timestep shifting.
+`high_noise_sample_params.scheduler`, `.flow_shift` and `.shifted_timestep`
+are accepted as aliases for those shared settings in video requests. Image
+requests ignore these high-noise fields. Within one video request, a
+corresponding `sample_params` field takes precedence. Request aliases override
+inherited startup and recipe values; `null` clears the inherited shared setting.
 
 | Field | Type |
 | --- | --- |
@@ -1693,15 +1815,26 @@ When omitted, backend defaults apply to these fields:
 
 ### Frame Count Semantics
 
-`video_frames` is the requested target length, but the current core video path internally normalizes the effective frame count to the largest `4n + 1` value that does not exceed the requested count.
+`video_frames` is the requested target length. The core normalizes it according
+to the loaded model:
 
-Examples:
+| Model family | Frame alignment | Fixed FPS |
+| --- | --- | --- |
+| Wan, HunyuanVideo, LingBot | `4n + 1`, round down | Wan 2.2 S2V: 16 |
+| LTX | `8n + 1`, round down | None |
+| MiniMax-H3 | `17n + 5`, round up, minimum 5 | 24 |
+| AnimateDiff | Whole frames, maximum 32 | None |
+
+Wan examples:
 
 - `video_frames = 33` stays `33`
 - `video_frames = 34` becomes `33`
 - `video_frames = 32` becomes `29`
 
-The completed job payload includes the actual decoded `frame_count`.
+At 16 FPS, a 5-second target requests 80 frames and aligns to 77 frames for Wan,
+or approximately 4.813 seconds. Audio-driven generation and temporal upscaling
+can change the final length. Use the completed job's actual decoded `frame_count`
+and `fps` for the final playback duration.
 
 ### Completion Result
 
@@ -1788,5 +1921,5 @@ result items and OpenAI image items contain the parameter snapshot with each
 image's actual seed and without `batch_count`. Native video
 results contain the video request snapshot. SD API `info.generation_info` is an array
 aligned with `info.infotexts` and `info.all_seeds`; the outer `parameters` field
-remains the request echo. See [generation metadata](../../docs/generation_metadata.md)
+remains the request echo. See [generation metadata](../../docs/guides/generation_metadata.md)
 for field semantics, postprocessing and container storage.
